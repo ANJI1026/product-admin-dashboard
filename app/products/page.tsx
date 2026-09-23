@@ -2,6 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import ProtectedRoute from "@/components/auth/ProtectedRoute";
+import ProductList from "@/components/products/ProductList";
 
 export default function ProductsPage() {
   const router = useRouter();
@@ -23,6 +24,7 @@ export default function ProductsPage() {
             </h1>
 
             <button
+              type="button"
               onClick={handleLogout}
               className="rounded-lg bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-gray-700"
             >
@@ -32,13 +34,17 @@ export default function ProductsPage() {
         </header>
 
         <section className="mx-auto max-w-7xl px-6 py-8">
-          <h2 className="text-2xl font-bold text-gray-900">
-            Products
-          </h2>
+          <div className="mb-6">
+            <h2 className="text-2xl font-bold text-gray-900">
+              Products
+            </h2>
 
-          <p className="mt-2 text-gray-500">
-            Product dashboard coming next.
-          </p>
+            <p className="mt-1 text-gray-500">
+              Manage your product catalog.
+            </p>
+          </div>
+
+          <ProductList />
         </section>
       </main>
     </ProtectedRoute>
