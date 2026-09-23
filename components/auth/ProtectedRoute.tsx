@@ -20,15 +20,5 @@ export default function ProtectedRoute({
     }
   }, [router]);
 
-  const token = localStorage.getItem("accessToken");
-
-  if (!token) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <p className="text-gray-500">Checking authentication...</p>
-      </div>
-    );
-  }
-
   return <>{children}</>;
 }
