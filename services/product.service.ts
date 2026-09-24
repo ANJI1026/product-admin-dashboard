@@ -13,12 +13,15 @@ export const getProducts = async ({
   limit,
   skip,
 }: GetProductsParams): Promise<ProductListResponse> => {
-  const response = await api.get<ProductListResponse>("/products", {
-    params: {
-      limit,
-      skip,
-    },
-  });
+  const response = await api.get<ProductListResponse>(
+    "/products",
+    {
+      params: {
+        limit,
+        skip,
+      },
+    }
+  );
 
   return response.data;
 };
@@ -55,13 +58,14 @@ export interface ProductCategory {
   url: string;
 }
 
-export const getCategories = async (): Promise<ProductCategory[]> => {
-  const response = await api.get<ProductCategory[]>(
-    "/products/categories"
-  );
+export const getCategories =
+  async (): Promise<ProductCategory[]> => {
+    const response = await api.get<ProductCategory[]>(
+      "/products/categories"
+    );
 
-  return response.data;
-};
+    return response.data;
+  };
 
 export const getProductsByCategory = async ({
   category,
@@ -88,7 +92,9 @@ export const getProductsByCategory = async ({
 export const getProductById = async (
   id: number
 ): Promise<Product> => {
-  const response = await api.get<Product>(`/products/${id}`);
+  const response = await api.get<Product>(
+    `/products/${id}`
+  );
 
   return response.data;
 };
@@ -104,7 +110,10 @@ export interface CreateProductInput {
 export const createProduct = async (
   data: CreateProductInput
 ): Promise<Product> => {
-  const response = await api.post<Product>("/products/add", data);
+  const response = await api.post<Product>(
+    "/products/add",
+    data
+  );
 
   return response.data;
 };
@@ -121,13 +130,18 @@ export const updateProduct = async (
   id: number,
   data: UpdateProductInput
 ): Promise<Product> => {
-  const response = await api.put<Product>(`/products/${id}`, data);
+  const response = await api.put<Product>(
+    `/products/${id}`,
+    data
+  );
 
   return response.data;
 };
 
 export const deleteProduct = async (id: number) => {
-  const response = await api.delete(`/products/${id}`);
+  const response = await api.delete(
+    `/products/${id}`
+  );
 
   return response.data;
 };

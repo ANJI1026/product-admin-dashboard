@@ -1,36 +1,72 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Product Admin Dashboard
+
+A responsive Product Admin Dashboard built with Next.js, TypeScript, Tailwind CSS, Axios, and DummyJSON.
+
+## Features
+
+- Login authentication using DummyJSON
+- Protected product routes
+- Product listing with responsive table/cards
+- Pagination with configurable page size
+- Search with debounce and request cancellation
+- Category filtering
+- Sorting by title, price, and rating
+- Product details with images and reviews
+- Add product
+- Edit product
+- Delete product with confirmation
+- Form validation
+- Loading, error, empty, and retry states
+- URL-based pagination, search, filter, and sorting
+- Shared Axios instance with authentication interceptor
+- Responsive desktop and mobile UI
+
+## Tech Stack
+
+- Next.js
+- TypeScript
+- Tailwind CSS
+- Axios
+- DummyJSON API
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Demo Login
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+**Username:** `emilys`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+**Password:** `emilyspass`
 
-## Learn More
+## API Notes
 
-To learn more about Next.js, take a look at the following resources:
+DummyJSON supports product creation, updates, and deletion as simulated API operations. These changes are not permanently persisted by the API.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+To provide a usable dashboard experience, created and edited products are stored locally in the browser using `localStorage`. Deleted products are also tracked locally so that simulated mutations remain reflected in the UI.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Search Race-Condition Handling
 
-## Deploy on Vercel
+Search requests use `AbortController` so that previous requests can be cancelled when the search query changes. This prevents stale search responses from replacing newer results.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Assignment Notes
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Key implementation choices
+
+- App Router with reusable components
+- Axios service layer for API communication
+- URL query parameters for pagination, search, category, and sorting
+- Local storage for simulated mutation persistence
+- Responsive table/card layouts
+
+### Problem and Fix
+
+DummyJSON product mutations are simulated and are not permanently reflected in subsequent API requests. This caused newly created or edited products to disappear from the product list.
+
+The application solves this by storing created and edited products locally and merging them with API results. Deleted product IDs are also stored locally.
+
+### AI Assistance
+
+AI assistance was used during development for implementation guidance, debugging, code review, and identifying edge cases such as request race conditions, responsive layouts, protected routes, and DummyJSON mutation behavior.

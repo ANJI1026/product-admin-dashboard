@@ -7,37 +7,51 @@ const api = axios.create({
   },
 });
 
-// Attach authentication token to every request
 api.interceptors.request.use(
   (config) => {
     if (typeof window !== "undefined") {
-      const token = localStorage.getItem("accessToken");
+      const token =
+        localStorage.getItem("accessToken");
 
       if (token) {
-        config.headers.Authorization = `Bearer ${token}`;
+        config.headers.Authorization =
+          `Bearer ${token}`;
       }
     }
 
     return config;
   },
-  (error) => {
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
-// Handle API errors in one place
 api.interceptors.response.use(
   (response) => response,
   (error) => {
+    /*
+     * AbortController cancellations are intentional.
+     * Do not treat them as real API errors.
+     */
+    if (
+      axios.isCancel(error) ||
+      error.code === "ERR_CANCELED"
+    ) {
+      return Promise.reject(error);
+    }
+
     if (error.response) {
       console.error(
         `API Error: ${error.response.status}`,
         error.response.data
       );
     } else if (error.request) {
-      console.error("Network error: No response received.");
+      console.error(
+        "Network error: No response received."
+      );
     } else {
-      console.error("Request error:", error.message);
+      console.error(
+        "Request error:",
+        error.message
+      );
     }
 
     return Promise.reject(error);

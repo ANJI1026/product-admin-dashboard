@@ -1,182 +1,226 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 import {
   usePathname,
   useRouter,
   useSearchParams,
 } from "next/navigation";
+import axios from "axios";
 
 import {
-  getProducts,
-  searchProducts,
+  deleteProduct,
   getCategories,
+  getProducts,
   getProductsByCategory,
+  searchProducts,
 } from "@/services/product.service";
-
-import { Product } from "@/types/product";
 
 import {
   getDeletedProductIds,
   getStoredProducts,
+  removeStoredProduct,
 } from "@/lib/product-storage";
 
+import { Product } from "@/types/product";
+
 const DEFAULT_LIMIT = 10;
-const PAGE_SIZE_OPTIONS = [10, 20, 50];
+
+type Category = {
+  slug: string;
+  name: string;
+  url: string;
+};
 
 export default function ProductList() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
 
-  /*
-   * Read page from URL.
-   */
-  const requestedPage = Number(searchParams.get("page"));
+  const pageParam = Number(searchParams.get("page"));
+  const limitParam = Number(searchParams.get("limit"));
 
   const page =
-    Number.isInteger(requestedPage) && requestedPage > 0
-      ? requestedPage
+    Number.isInteger(pageParam) && pageParam > 0
+      ? pageParam
       : 1;
 
-  /*
-   * Read page size from URL.
-   */
-  const requestedLimit = Number(searchParams.get("limit"));
-
-  const limit = PAGE_SIZE_OPTIONS.includes(requestedLimit)
-    ? requestedLimit
+  const limit = [10, 20, 50].includes(limitParam)
+    ? limitParam
     : DEFAULT_LIMIT;
 
-  /*
-   * Search value comes from URL.
-   */
-  const searchQuery = searchParams.get("search") || "";
+  const urlSearch = searchParams.get("search") ?? "";
+  const category = searchParams.get("category") ?? "";
+  const sort = searchParams.get("sort") ?? "";
 
-  /*
-   * Category and sort come from URL.
-   */
-  const category = searchParams.get("category") || "";
-  const sort = searchParams.get("sort") || "";
-
-  /*
-   * Product state.
-   */
+  const [searchInput, setSearchInput] = useState(urlSearch);
   const [products, setProducts] = useState<Product[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [total, setTotal] = useState(0);
-
-  const [isLoading, setIsLoading] = useState(true);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [retryCount, setRetryCount] = useState(0);
+
+  const updateUrl = (updates: Record<string, string>) => {
+    const params = new URLSearchParams(
+      searchParams.toString()
+    );
+
+    Object.entries(updates).forEach(([key, value]) => {
+      if (value) {
+        params.set(key, value);
+      } else {
+        params.delete(key);
+      }
+    });
+
+    router.push(`${pathname}?${params.toString()}`);
+  };
 
   /*
-   * Search input is local while typing.
-   */
-  const [searchInput, setSearchInput] = useState(searchQuery);
-
-  /*
-   * Categories.
-   */
-  const [categories, setCategories] = useState<
-    { slug: string; name: string; url: string }[]
-  >([]);
-
-  /*
-   * Pagination.
-   */
-  const totalPages = Math.ceil(total / limit);
-  const skip = (page - 1) * limit;
-
-  /*
-   * Load categories.
+   * Sync search box with URL.
    */
   useEffect(() => {
-    const loadCategories = async () => {
-      try {
-        const data = await getCategories();
-        setCategories(data);
-      } catch (error) {
-        console.error("Failed to load categories:", error);
-      }
-    };
-
-    loadCategories();
-  }, []);
+    setSearchInput(urlSearch);
+  }, [urlSearch]);
 
   /*
    * Debounced search.
    */
   useEffect(() => {
-    if (searchInput === searchQuery) {
-      return;
-    }
+    const timer = window.setTimeout(() => {
+      const value = searchInput.trim();
 
-    const timer = setTimeout(() => {
-      const params = new URLSearchParams(searchParams.toString());
-
-      if (searchInput.trim()) {
-        params.set("search", searchInput.trim());
-      } else {
-        params.delete("search");
+      if (value !== urlSearch) {
+        updateUrl({
+          search: value,
+          page: "1",
+        });
       }
-
-      params.set("page", "1");
-
-      router.push(`${pathname}?${params.toString()}`);
     }, 600);
 
-    return () => clearTimeout(timer);
-  }, [
-    searchInput,
-    searchQuery,
-    pathname,
-    router,
-    searchParams,
-  ]);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [searchInput, urlSearch]);
+
+  /*
+   * Load categories.
+   */
+  useEffect(() => {
+    let active = true;
+
+    const loadCategories = async () => {
+      try {
+        const data = await getCategories();
+
+        if (active) {
+          setCategories(data);
+        }
+      } catch (err) {
+        console.error(
+          "Failed to load categories:",
+          err
+        );
+      }
+    };
+
+    loadCategories();
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   /*
    * Load products.
+   *
+   * Important:
+   * DummyJSON mutations are simulated/non-persistent.
+   * Therefore localStorage is treated as part of the
+   * application's product dataset.
    */
   useEffect(() => {
     const controller = new AbortController();
 
     const loadProducts = async () => {
+      setLoading(true);
+      setError("");
+
       try {
-        setIsLoading(true);
-        setError("");
+        /*
+         * ---------------------------------------------
+         * LOCAL PRODUCTS
+         * ---------------------------------------------
+         */
+        const storedProducts = getStoredProducts();
+        const deletedIds = getDeletedProductIds();
+        const deletedSet = new Set(deletedIds);
 
-        let data;
+        let localProducts = storedProducts.filter(
+          (product) => !deletedSet.has(product.id)
+        );
 
         /*
-         * Category search.
+         * ---------------------------------------------
+         * API PRODUCTS
+         * ---------------------------------------------
+         *
+         * We fetch the complete relevant API dataset
+         * when filtering/searching so that we can combine
+         * it correctly with locally-created products.
          */
-        if (category) {
-          data = await getProductsByCategory({
-            category,
-            limit,
-            skip,
+        let apiProducts: Product[] = [];
+        let apiTotal = 0;
+
+        const normalizedSearch =
+          urlSearch.trim().toLowerCase();
+
+        const normalizedCategory =
+          category.trim().toLowerCase();
+
+        if (normalizedCategory) {
+          /*
+           * Fetch the category dataset.
+           *
+           * limit=0 tells DummyJSON to return the
+           * complete category dataset.
+           */
+          const data = await getProductsByCategory({
+            category: normalizedCategory,
+            limit: 0,
+            skip: 0,
           });
-        }
-        /*
-         * Text search.
-         */
-        else if (searchQuery.trim()) {
-          data = await searchProducts({
-            query: searchQuery.trim(),
-            limit,
-            skip,
+
+          apiProducts = data.products;
+          apiTotal = data.total;
+        } else if (normalizedSearch) {
+          /*
+           * Search the complete API dataset.
+           */
+          const data = await searchProducts({
+            query: urlSearch.trim(),
+            limit: 0,
+            skip: 0,
             signal: controller.signal,
           });
-        }
-        /*
-         * Normal product list.
-         */
-        else {
-          data = await getProducts({
+
+          apiProducts = data.products;
+          apiTotal = data.total;
+        } else {
+          /*
+           * No filters.
+           *
+           * Use the normal API pagination endpoint.
+           */
+          const data = await getProducts({
             limit,
-            skip,
+            skip: (page - 1) * limit,
           });
+
+          apiProducts = data.products;
+          apiTotal = data.total;
         }
 
         if (controller.signal.aborted) {
@@ -184,219 +228,329 @@ export default function ProductList() {
         }
 
         /*
-         * Products created/edited locally.
+         * Remove locally deleted API products.
          */
-        const storedProducts = getStoredProducts();
-
-        /*
-         * Products deleted locally.
-         */
-        const deletedProductIds = getDeletedProductIds();
-
-        /*
-         * Remove deleted products from API results.
-         */
-        const filteredApiProducts = data.products.filter(
-          (product) => !deletedProductIds.includes(product.id)
+        apiProducts = apiProducts.filter(
+          (product) => !deletedSet.has(product.id)
         );
 
         /*
-         * Remove deleted products from local storage.
+         * ---------------------------------------------
+         * FILTER LOCAL PRODUCTS
+         * ---------------------------------------------
          */
-        const localProducts = storedProducts.filter(
-          (product) => !deletedProductIds.includes(product.id)
-        );
+
+        if (normalizedSearch) {
+          localProducts = localProducts.filter(
+            (product) =>
+              product.title
+                .toLowerCase()
+                .includes(normalizedSearch) ||
+              product.description
+                ?.toLowerCase()
+                .includes(normalizedSearch)
+          );
+        }
+
+        if (normalizedCategory) {
+          localProducts = localProducts.filter(
+            (product) =>
+              product.category
+                .trim()
+                .toLowerCase() ===
+              normalizedCategory
+          );
+        }
 
         /*
-         * Match local products against search.
-         */
-        const query = searchQuery.trim().toLowerCase();
-
-        const matchingLocalProducts = query
-          ? localProducts.filter((product) => {
-              const title = product.title.toLowerCase();
-              const description =
-                product.description?.toLowerCase() || "";
-              const categoryName =
-                product.category?.toLowerCase() || "";
-
-              return (
-                title.includes(query) ||
-                description.includes(query) ||
-                categoryName.includes(query)
-              );
-            })
-          : localProducts;
-
-        /*
-         * When category filter is active,
-         * only include matching local products.
-         */
-        const categoryFilteredLocalProducts = category
-          ? matchingLocalProducts.filter(
-              (product) => product.category === category
-            )
-          : matchingLocalProducts;
-
-        /*
-         * Merge local products with API products.
+         * ---------------------------------------------
+         * FILTER API PRODUCTS
+         * ---------------------------------------------
          *
-         * Local version wins when the same ID exists.
+         * Category + search cannot be sent to DummyJSON
+         * together, so apply search locally after the
+         * category request.
          */
-        const mergedProducts = [
-          ...categoryFilteredLocalProducts,
-          ...filteredApiProducts.filter(
-            (apiProduct) =>
-              !categoryFilteredLocalProducts.some(
-                (localProduct) =>
-                  localProduct.id === apiProduct.id
-              )
-          ),
-        ];
+        if (normalizedSearch) {
+          apiProducts = apiProducts.filter(
+            (product) =>
+              product.title
+                .toLowerCase()
+                .includes(normalizedSearch) ||
+              product.description
+                ?.toLowerCase()
+                .includes(normalizedSearch)
+          );
+        }
+
+        if (normalizedCategory) {
+          apiProducts = apiProducts.filter(
+            (product) =>
+              product.category
+                .trim()
+                .toLowerCase() ===
+              normalizedCategory
+          );
+        }
 
         /*
-         * Remove duplicate products by ID.
+         * ---------------------------------------------
+         * MERGE
+         * ---------------------------------------------
+         *
+         * Local version wins if the same ID exists
+         * in both datasets.
          */
-        const uniqueProducts = Array.from(
-          new Map(
-            mergedProducts.map((product) => [
-              product.id,
-              product,
-            ])
-          ).values()
+        const productMap = new Map<number, Product>();
+
+        for (const product of apiProducts) {
+          productMap.set(product.id, product);
+        }
+
+        for (const product of localProducts) {
+          productMap.set(product.id, product);
+        }
+
+        const combinedProducts = Array.from(
+          productMap.values()
         );
 
         /*
-         * Apply pagination AFTER merging API + local products.
+         * ---------------------------------------------
+         * SORT
+         * ---------------------------------------------
          */
-        const start = skip;
-        const end = start + limit;
+        if (sort === "price-asc") {
+          combinedProducts.sort(
+            (a, b) => a.price - b.price
+          );
+        }
 
-        const paginatedProducts = uniqueProducts.slice(
-          start,
-          end
+        if (sort === "price-desc") {
+          combinedProducts.sort(
+            (a, b) => b.price - a.price
+          );
+        }
+
+        if (sort === "rating-desc") {
+          combinedProducts.sort(
+            (a, b) =>
+              (b.rating ?? 0) -
+              (a.rating ?? 0)
+          );
+        }
+
+        if (sort === "title-asc") {
+          combinedProducts.sort((a, b) =>
+            a.title.localeCompare(b.title)
+          );
+        }
+
+        /*
+         * ---------------------------------------------
+         * PAGINATION
+         * ---------------------------------------------
+         *
+         * If filters/search/local products are involved,
+         * paginate the combined dataset.
+         *
+         * With no filters and no local products, the API
+         * has already provided the correct page.
+         */
+        const hasClientDataset =
+          Boolean(normalizedSearch) ||
+          Boolean(normalizedCategory) ||
+          Boolean(sort) ||
+          localProducts.length > 0;
+
+        let visibleProducts: Product[];
+        let calculatedTotal: number;
+
+        if (hasClientDataset) {
+          const start = (page - 1) * limit;
+
+          visibleProducts = combinedProducts.slice(
+            start,
+            start + limit
+          );
+
+          calculatedTotal =
+            combinedProducts.length;
+        } else {
+          visibleProducts = combinedProducts;
+          calculatedTotal = apiTotal;
+        }
+
+        setProducts(visibleProducts);
+        setTotal(calculatedTotal);
+      } catch (err) {
+        if (
+          axios.isCancel(err) ||
+          (err instanceof Error &&
+            "code" in err &&
+            (err as { code?: string }).code ===
+              "ERR_CANCELED")
+        ) {
+          return;
+        }
+
+        console.error(
+          "Product loading failed:",
+          err
         );
 
-        /*
-         * Total must represent the merged dataset.
-         */
-        const mergedTotal = uniqueProducts.length;
-
-        /*
-         * Update UI.
-         */
-        if (!controller.signal.aborted) {
-          setProducts(paginatedProducts);
-          setTotal(mergedTotal);
-        }
-      } catch (error) {
-        if (!controller.signal.aborted) {
-          console.error("Failed to load products:", error);
-          setError("Failed to load products.");
-        }
+        setError(
+          "Failed to load products. Please try again."
+        );
       } finally {
         if (!controller.signal.aborted) {
-          setIsLoading(false);
+          setLoading(false);
         }
       }
     };
 
-    /*
-     * Small delay before loading data.
-     */
-    const timer = setTimeout(loadProducts, 400);
+    loadProducts();
 
     return () => {
-      clearTimeout(timer);
       controller.abort();
     };
   }, [
-    limit,
-    skip,
-    searchQuery,
-    category,
-    retryCount,
-  ]);
-
-  /*
-   * If page is larger than available pages,
-   * move to the last valid page.
-   */
-  useEffect(() => {
-    if (totalPages === 0) {
-      return;
-    }
-
-    if (page > totalPages) {
-      const params = new URLSearchParams(
-        searchParams.toString()
-      );
-
-      params.set("page", String(totalPages));
-
-      router.replace(`${pathname}?${params.toString()}`);
-    }
-  }, [
     page,
-    totalPages,
-    pathname,
-    router,
-    searchParams,
+    limit,
+    urlSearch,
+    category,
+    sort,
   ]);
 
   /*
-   * Update pagination values in URL.
+   * Final display sorting.
    */
-  const updateUrl = (
-    nextPage: number,
-    nextLimit: number
-  ) => {
-    const params = new URLSearchParams(
-      searchParams.toString()
-    );
+  const visibleProducts = useMemo(() => {
+    const result = [...products];
 
-    params.set("page", String(nextPage));
-    params.set("limit", String(nextLimit));
+    if (sort === "price-asc") {
+      result.sort(
+        (a, b) => a.price - b.price
+      );
+    }
 
-    router.push(`${pathname}?${params.toString()}`);
-  };
+    if (sort === "price-desc") {
+      result.sort(
+        (a, b) => b.price - a.price
+      );
+    }
 
-  /*
-   * Search input handler.
-   */
-  const handleSearchChange = (
-    event: React.ChangeEvent<HTMLInputElement>
-  ) => {
-    setSearchInput(event.target.value);
-  };
+    if (sort === "rating-desc") {
+      result.sort(
+        (a, b) =>
+          (b.rating ?? 0) -
+          (a.rating ?? 0)
+      );
+    }
 
-  /*
-   * Category handler.
-   */
+    if (sort === "title-asc") {
+      result.sort((a, b) =>
+        a.title.localeCompare(b.title)
+      );
+    }
+
+    return result;
+  }, [products, sort]);
+
+  const totalPages = Math.max(
+    1,
+    Math.ceil(total / limit)
+  );
+
+  const startNumber =
+    total === 0
+      ? 0
+      : (page - 1) * limit + 1;
+
+  const endNumber =
+    total === 0
+      ? 0
+      : Math.min(page * limit, total);
+
   const handleCategoryChange = (
     event: React.ChangeEvent<HTMLSelectElement>
   ) => {
-    const nextCategory = event.target.value;
-
-    const params = new URLSearchParams(
-      searchParams.toString()
-    );
-
-    if (nextCategory) {
-      params.set("category", nextCategory);
-    } else {
-      params.delete("category");
-    }
-
-    params.set("page", "1");
-
-    router.push(`${pathname}?${params.toString()}`);
+    updateUrl({
+      category: event.target.value,
+      page: "1",
+    });
   };
 
-  /*
-   * Page change.
-   */
-  const handlePageChange = (nextPage: number) => {
+  const handleSortChange = (
+    event: React.ChangeEvent<HTMLSelectElement>
+  ) => {
+    updateUrl({
+      sort: event.target.value,
+      page: "1",
+    });
+  };
+
+  const handleLimitChange = (
+    event: React.ChangeEvent<HTMLSelectElement>
+  ) => {
+    updateUrl({
+      limit: event.target.value,
+      page: "1",
+    });
+  };
+
+  const handleDelete = async (
+    product: Product
+  ) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to delete "${product.title}"?`
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      /*
+       * Local deletion is what makes the change
+       * persistent in this frontend.
+       */
+      removeStoredProduct(product.id);
+
+      /*
+       * Also call DummyJSON mutation.
+       */
+      try {
+        await deleteProduct(product.id);
+      } catch (err) {
+        console.error(
+          "API delete failed:",
+          err
+        );
+      }
+
+      /*
+       * Immediately remove from UI.
+       */
+      setProducts((current) =>
+        current.filter(
+          (item) => item.id !== product.id
+        )
+      );
+
+      setTotal((current) =>
+        Math.max(current - 1, 0)
+      );
+    } catch (err) {
+      console.error(err);
+
+      setError(
+        "Failed to delete product."
+      );
+    }
+  };
+
+  const goToPage = (nextPage: number) => {
     if (
       nextPage < 1 ||
       nextPage > totalPages
@@ -404,163 +558,40 @@ export default function ProductList() {
       return;
     }
 
-    updateUrl(nextPage, limit);
+    updateUrl({
+      page: String(nextPage),
+    });
   };
-
-  /*
-   * Page size change.
-   */
-  const handleLimitChange = (
-    event: React.ChangeEvent<HTMLSelectElement>
-  ) => {
-    const nextLimit = Number(event.target.value);
-
-    updateUrl(1, nextLimit);
-  };
-
-  /*
-   * Loading state.
-   */
-  if (isLoading) {
-    return (
-      <div className="rounded-lg border bg-white p-10 text-center">
-        <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-gray-300 border-t-blue-600" />
-
-        <p className="mt-4 text-sm text-gray-600">
-          Loading products...
-        </p>
-      </div>
-    );
-  }
-
-  /*
-   * Error state.
-   */
-  if (error) {
-    return (
-      <div className="rounded-lg border border-red-200 bg-red-50 p-8 text-center">
-        <h3 className="text-lg font-semibold text-red-800">
-          Something went wrong
-        </h3>
-
-        <p className="mt-2 text-sm text-red-600">
-          {error}
-        </p>
-
-        <button
-          type="button"
-          onClick={() =>
-            setRetryCount((count) => count + 1)
-          }
-          className="mt-4 rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
-
-  /*
-   * Empty state.
-   */
-  if (products.length === 0) {
-    return (
-      <div className="rounded-lg border bg-white p-10 text-center">
-        <h3 className="text-lg font-semibold text-gray-900">
-          No products found
-        </h3>
-
-        <p className="mt-2 text-sm text-gray-500">
-          Try changing your search or filter.
-        </p>
-      </div>
-    );
-  }
-
-  /*
-   * Client-side sorting.
-   */
-  const sortedProducts = [...products].sort(
-    (a, b) => {
-      switch (sort) {
-        case "price-asc":
-          return a.price - b.price;
-
-        case "price-desc":
-          return b.price - a.price;
-
-        case "rating-desc":
-          return b.rating - a.rating;
-
-        case "title-asc":
-          return a.title.localeCompare(b.title);
-
-        case "title-desc":
-          return b.title.localeCompare(a.title);
-
-        default:
-          return 0;
-      }
-    }
-  );
-
-  /*
-   * Showing X-Y of Z.
-   */
-  const firstItem = skip + 1;
-
-  const lastItem = Math.min(
-    skip + products.length,
-    total
-  );
-
-  /*
-   * Page numbers.
-   */
-  const pageNumbers = Array.from(
-    { length: totalPages },
-    (_, index) => index + 1
-  );
 
   return (
-    <div className="space-y-4">
-      {/* Search + Filters */}
-      <div className="flex flex-col gap-4">
-        {/* Search */}
-        <div className="w-full sm:max-w-md">
-          <label
-            htmlFor="product-search"
-            className="sr-only"
-          >
-            Search products
-          </label>
-
-          <input
-            id="product-search"
-            type="search"
-            value={searchInput}
-            onChange={handleSearchChange}
-            placeholder="Search products..."
-            className="w-full rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm outline-none focus:border-blue-500"
-          />
-        </div>
-
-        {/* Category + Sort */}
-        <div className="grid gap-4 sm:grid-cols-2">
-          {/* Category */}
+    <div>
+      {/* Controls */}
+      <div className="mb-6 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="grid gap-4 lg:grid-cols-[1fr_auto_auto_auto]">
           <div>
-            <label
-              htmlFor="category"
-              className="mb-1 block text-sm font-medium text-gray-700"
-            >
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Search
+            </label>
+
+            <input
+              value={searchInput}
+              onChange={(event) =>
+                setSearchInput(event.target.value)
+              }
+              placeholder="Search products..."
+              className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
               Category
             </label>
 
             <select
-              id="category"
               value={category}
               onChange={handleCategoryChange}
-              className="w-full rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm outline-none focus:border-blue-500"
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-blue-500"
             >
               <option value="">
                 All categories
@@ -577,38 +608,15 @@ export default function ProductList() {
             </select>
           </div>
 
-          {/* Sort */}
           <div>
-            <label
-              htmlFor="sort"
-              className="mb-1 block text-sm font-medium text-gray-700"
-            >
-              Sort by
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Sort
             </label>
 
             <select
-              id="sort"
               value={sort}
-              onChange={(event) => {
-                const nextSort = event.target.value;
-
-                const params = new URLSearchParams(
-                  searchParams.toString()
-                );
-
-                if (nextSort) {
-                  params.set("sort", nextSort);
-                } else {
-                  params.delete("sort");
-                }
-
-                params.set("page", "1");
-
-                router.push(
-                  `${pathname}?${params.toString()}`
-                );
-              }}
-              className="w-full rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm outline-none focus:border-blue-500"
+              onChange={handleSortChange}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-blue-500"
             >
               <option value="">
                 Default
@@ -629,257 +637,418 @@ export default function ProductList() {
               <option value="title-asc">
                 Title: A to Z
               </option>
-
-              <option value="title-desc">
-                Title: Z to A
-              </option>
             </select>
           </div>
-        </div>
 
-        {/* Products per page */}
-        <div className="flex justify-end">
-          <label className="flex items-center gap-2 text-sm text-gray-600">
-            Products per page:
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Per page
+            </label>
 
             <select
               value={limit}
               onChange={handleLimitChange}
-              className="rounded-lg border border-gray-300 bg-white px-3 py-2"
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none focus:border-blue-500"
             >
-              {PAGE_SIZE_OPTIONS.map((option) => (
-                <option
-                  key={option}
-                  value={option}
-                >
-                  {option}
-                </option>
-              ))}
+              <option value="10">
+                10
+              </option>
+
+              <option value="20">
+                20
+              </option>
+
+              <option value="50">
+                50
+              </option>
             </select>
-          </label>
-        </div>
-      </div>
-
-      {/* Products */}
-<div>
-  {/* Desktop table */}
-  <div className="hidden overflow-hidden rounded-lg bg-white shadow-sm md:block">
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-sm">
-        <thead className="border-b bg-gray-50 text-gray-600">
-          <tr>
-            <th className="px-6 py-4 font-medium">
-              Product
-            </th>
-
-            <th className="px-6 py-4 font-medium">
-              Category
-            </th>
-
-            <th className="px-6 py-4 font-medium">
-              Price
-            </th>
-
-            <th className="px-6 py-4 font-medium">
-              Rating
-            </th>
-
-            <th className="px-6 py-4 font-medium">
-              Stock
-            </th>
-          </tr>
-        </thead>
-
-        <tbody className="divide-y">
-          {sortedProducts.map((product) => (
-            <tr
-              key={product.id}
-              onClick={() =>
-                router.push(`/products/${product.id}`)
-              }
-              className="cursor-pointer hover:bg-gray-50"
-            >
-              <td className="px-6 py-4">
-                <div className="flex items-center gap-3">
-                  {product.thumbnail ||
-                  product.images?.[0] ? (
-                    <Image
-                      src={
-                        product.thumbnail ||
-                        product.images?.[0] ||
-                        ""
-                      }
-                      alt={product.title}
-                      width={48}
-                      height={48}
-                      className="h-12 w-12 rounded-lg object-cover"
-                    />
-                  ) : (
-                    <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-gray-100 text-xs text-gray-400">
-                      No image
-                    </div>
-                  )}
-
-                  <span className="font-medium text-gray-900">
-                    {product.title}
-                  </span>
-                </div>
-              </td>
-
-              <td className="px-6 py-4 text-gray-600">
-                {product.category}
-              </td>
-
-              <td className="px-6 py-4 font-medium text-gray-900">
-                ${product.price.toFixed(2)}
-              </td>
-
-              <td className="px-6 py-4 text-gray-600">
-                {Number(product.rating || 0).toFixed(1)}
-              </td>
-
-              <td className="px-6 py-4 text-gray-600">
-                {product.stock}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  {/* Mobile cards */}
-  <div className="space-y-3 md:hidden">
-    {sortedProducts.map((product) => (
-      <button
-        key={product.id}
-        type="button"
-        onClick={() =>
-          router.push(`/products/${product.id}`)
-        }
-        className="w-full rounded-lg bg-white p-4 text-left shadow-sm transition hover:bg-gray-50"
-      >
-        <div className="flex gap-4">
-          {/* Product image */}
-          {product.thumbnail ||
-          product.images?.[0] ? (
-            <Image
-              src={
-                product.thumbnail ||
-                product.images?.[0] ||
-                ""
-              }
-              alt={product.title}
-              width={80}
-              height={80}
-              className="h-20 w-20 shrink-0 rounded-lg object-cover"
-            />
-          ) : (
-            <div className="flex h-20 w-20 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-xs text-gray-400">
-              No image
-            </div>
-          )}
-
-          {/* Product details */}
-          <div className="min-w-0 flex-1">
-            <h3 className="truncate font-semibold text-gray-900">
-              {product.title}
-            </h3>
-
-            <p className="mt-1 text-sm text-gray-500">
-              {product.category}
-            </p>
-
-            <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-              <div>
-                <span className="text-gray-500">
-                  Price
-                </span>
-
-                <p className="font-medium text-gray-900">
-                  ${product.price.toFixed(2)}
-                </p>
-              </div>
-
-              <div>
-                <span className="text-gray-500">
-                  Rating
-                </span>
-
-                <p className="font-medium text-gray-900">
-                  {Number(product.rating || 0).toFixed(1)}
-                </p>
-              </div>
-
-              <div>
-                <span className="text-gray-500">
-                  Stock
-                </span>
-
-                <p className="font-medium text-gray-900">
-                  {product.stock}
-                </p>
-              </div>
-            </div>
           </div>
         </div>
-      </button>
-    ))}
-  </div>
-</div>
+      </div>
 
-      {/* Pagination */}
-      <div className="flex flex-col gap-4 rounded-lg bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-        <p className="text-sm text-gray-600">
-          Showing {firstItem}–{lastItem} of {total}
-        </p>
+      {/* Error */}
+      {error && (
+        <div className="mb-6 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          <span>{error}</span>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Previous */}
           <button
             type="button"
             onClick={() =>
-              handlePageChange(page - 1)
+              window.location.reload()
             }
-            disabled={page === 1}
-            className="rounded-lg border border-gray-300 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-40"
+            className="font-semibold underline"
           >
-            Previous
-          </button>
-
-          {/* Page numbers */}
-          {pageNumbers.map((pageNumber) => (
-            <button
-              key={pageNumber}
-              type="button"
-              onClick={() =>
-                handlePageChange(pageNumber)
-              }
-              className={`rounded-lg border px-3 py-2 text-sm ${
-                pageNumber === page
-                  ? "border-gray-900 bg-gray-900 text-white"
-                  : "border-gray-300 bg-white text-gray-700 hover:bg-gray-50"
-              }`}
-            >
-              {pageNumber}
-            </button>
-          ))}
-
-          {/* Next */}
-          <button
-            type="button"
-            onClick={() =>
-              handlePageChange(page + 1)
-            }
-            disabled={
-              page === totalPages
-            }
-            className="rounded-lg border border-gray-300 px-3 py-2 text-sm disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Next
+            Retry
           </button>
         </div>
-      </div>
+      )}
+
+      {/* Loading */}
+      {loading && (
+        <div className="rounded-xl border border-slate-200 bg-white p-12 text-center shadow-sm">
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-slate-200 border-t-blue-600" />
+
+          <p className="mt-4 text-sm text-slate-500">
+            Loading products...
+          </p>
+        </div>
+      )}
+
+      {/* Empty */}
+      {!loading &&
+        visibleProducts.length === 0 && (
+          <div className="rounded-xl border border-slate-200 bg-white p-12 text-center shadow-sm">
+            <h3 className="text-lg font-semibold text-slate-900">
+              No products found
+            </h3>
+
+            <p className="mt-1 text-sm text-slate-500">
+              Try changing your search or filters.
+            </p>
+          </div>
+        )}
+
+      {/* Desktop */}
+      {!loading &&
+        visibleProducts.length > 0 && (
+          <div className="hidden overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm md:block">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b border-slate-200 bg-slate-50">
+                  <tr>
+                    <th className="px-5 py-4 font-semibold text-slate-600">
+                      Product
+                    </th>
+
+                    <th className="px-5 py-4 font-semibold text-slate-600">
+                      Category
+                    </th>
+
+                    <th className="px-5 py-4 font-semibold text-slate-600">
+                      Price
+                    </th>
+
+                    <th className="px-5 py-4 font-semibold text-slate-600">
+                      Rating
+                    </th>
+
+                    <th className="px-5 py-4 font-semibold text-slate-600">
+                      Stock
+                    </th>
+
+                    <th className="px-5 py-4 text-right font-semibold text-slate-600">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+
+                <tbody className="divide-y divide-slate-100">
+                  {visibleProducts.map(
+                    (product) => (
+                      <tr
+                        key={product.id}
+                        className="transition hover:bg-slate-50"
+                      >
+                        <td className="px-5 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className="relative h-12 w-12 shrink-0 overflow-hidden rounded-lg bg-slate-100">
+                              {product.thumbnail ? (
+                                <Image
+                                  src={
+                                    product.thumbnail
+                                  }
+                                  alt={
+                                    product.title
+                                  }
+                                  fill
+                                  className="object-cover"
+                                />
+                              ) : (
+                                <div className="flex h-full items-center justify-center text-xs text-slate-400">
+                                  No image
+                                </div>
+                              )}
+                            </div>
+
+                            <div>
+                              <Link
+                                href={`/products/${product.id}`}
+                                className="font-semibold text-slate-900 hover:text-blue-600"
+                              >
+                                {product.title}
+                              </Link>
+
+                              <p className="mt-0.5 text-xs text-slate-400">
+                                ID:{" "}
+                                {product.id}
+                              </p>
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className="px-5 py-4 capitalize text-slate-600">
+                          {product.category}
+                        </td>
+
+                        <td className="px-5 py-4 font-semibold text-slate-900">
+                          ${product.price}
+                        </td>
+
+                        <td className="px-5 py-4 text-slate-600">
+                          ⭐{" "}
+                          {product.rating ??
+                            "—"}
+                        </td>
+
+                        <td className="px-5 py-4 text-slate-600">
+                          {product.stock}
+                        </td>
+
+                        <td className="px-5 py-4">
+                          <div className="flex justify-end gap-3">
+                            <Link
+                              href={`/products/${product.id}`}
+                              className="font-medium text-blue-600 hover:text-blue-700"
+                            >
+                              View
+                            </Link>
+
+                            <Link
+                              href={`/products/${product.id}/edit`}
+                              className="font-medium text-slate-600 hover:text-slate-900"
+                            >
+                              Edit
+                            </Link>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleDelete(
+                                  product
+                                )
+                              }
+                              className="font-medium text-red-600 hover:text-red-700"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    )
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+      {/* Mobile */}
+      {!loading &&
+        visibleProducts.length > 0 && (
+          <div className="space-y-4 md:hidden">
+            {visibleProducts.map(
+              (product) => (
+                <div
+                  key={product.id}
+                  className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
+                >
+                  <div className="flex gap-4">
+                    <div className="relative h-20 w-20 shrink-0 overflow-hidden rounded-lg bg-slate-100">
+                      {product.thumbnail ? (
+                        <Image
+                          src={
+                            product.thumbnail
+                          }
+                          alt={
+                            product.title
+                          }
+                          fill
+                          className="object-cover"
+                        />
+                      ) : (
+                        <div className="flex h-full items-center justify-center text-xs text-slate-400">
+                          No image
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <Link
+                        href={`/products/${product.id}`}
+                        className="font-semibold text-slate-900 hover:text-blue-600"
+                      >
+                        {product.title}
+                      </Link>
+
+                      <p className="mt-1 text-sm capitalize text-slate-500">
+                        {product.category}
+                      </p>
+
+                      <p className="mt-2 font-semibold text-slate-900">
+                        ${product.price}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 gap-3 border-t border-slate-100 pt-4 text-sm">
+                    <div>
+                      <p className="text-xs text-slate-400">
+                        Rating
+                      </p>
+
+                      <p className="mt-1 font-medium text-slate-700">
+                        ⭐{" "}
+                        {product.rating ??
+                          "—"}
+                      </p>
+                    </div>
+
+                    <div>
+                      <p className="text-xs text-slate-400">
+                        Stock
+                      </p>
+
+                      <p className="mt-1 font-medium text-slate-700">
+                        {product.stock}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex gap-4 border-t border-slate-100 pt-4">
+                    <Link
+                      href={`/products/${product.id}`}
+                      className="text-sm font-semibold text-blue-600"
+                    >
+                      View
+                    </Link>
+
+                    <Link
+                      href={`/products/${product.id}/edit`}
+                      className="text-sm font-semibold text-slate-600"
+                    >
+                      Edit
+                    </Link>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleDelete(
+                          product
+                        )
+                      }
+                      className="text-sm font-semibold text-red-600"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              )
+            )}
+          </div>
+        )}
+
+      {/* Pagination */}
+      {!loading && total > 0 && (
+        <div className="mt-6 flex flex-col gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-slate-500">
+            Showing{" "}
+            <span className="font-semibold text-slate-700">
+              {startNumber}–{endNumber}
+            </span>{" "}
+            of{" "}
+            <span className="font-semibold text-slate-700">
+              {total}
+            </span>
+          </p>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() =>
+                goToPage(page - 1)
+              }
+              disabled={page <= 1}
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Previous
+            </button>
+
+            <div className="flex items-center gap-1">
+              {Array.from(
+                {
+                  length: Math.min(
+                    totalPages,
+                    5
+                  ),
+                },
+                (_, index) => {
+                  let pageNumber =
+                    index + 1;
+
+                  if (
+                    totalPages > 5 &&
+                    page > 3
+                  ) {
+                    pageNumber =
+                      page - 2 + index;
+                  }
+
+                  if (
+                    pageNumber >
+                    totalPages
+                  ) {
+                    return null;
+                  }
+
+                  return (
+                    <button
+                      key={pageNumber}
+                      type="button"
+                      onClick={() =>
+                        goToPage(
+                          pageNumber
+                        )
+                      }
+                      className={`h-9 min-w-9 rounded-lg px-3 text-sm font-medium ${
+                        pageNumber ===
+                        page
+                          ? "bg-blue-600 text-white"
+                          : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      {pageNumber}
+                    </button>
+                  );
+                }
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                goToPage(page + 1)
+              }
+              disabled={
+                page >= totalPages
+              }
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
+
+          <p className="text-sm text-slate-500">
+            Page{" "}
+            <span className="font-semibold text-slate-700">
+              {page}
+            </span>{" "}
+            of{" "}
+            <span className="font-semibold text-slate-700">
+              {totalPages}
+            </span>
+          </p>
+        </div>
+      )}
     </div>
   );
 }
