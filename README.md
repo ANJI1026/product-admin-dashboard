@@ -69,4 +69,4 @@ The application solves this by storing created and edited products locally and m
 
 ### AI Assistance
 
-AI assistance was used during development for implementation guidance, debugging, code review, and identifying edge cases such as request race conditions, responsive layouts, protected routes, and DummyJSON mutation behavior.
+AI was used as a development aid for understanding implementation approaches, debugging issues, improving UI details, and reviewing parts of the code. I tested, understood, and adapted the suggestions while building the application.
