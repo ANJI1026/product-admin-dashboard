@@ -68,5 +68,5 @@ DummyJSON product mutations are simulated and are not permanently reflected in s
 The application solves this by storing created and edited products locally and merging them with API results. Deleted product IDs are also stored locally.
 
 ### AI Assistance
-
 AI was used as a development aid for understanding implementation approaches, debugging issues, improving UI details, and reviewing parts of the code. I tested, understood, and adapted the suggestions while building the application.
+>>>>>>> d8479ff (fix: redirect home to login)
